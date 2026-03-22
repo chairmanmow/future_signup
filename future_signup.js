@@ -164,6 +164,7 @@ function createAccountFromSession() {
         user.name = session.alias.substr(0, LEN_NAME);
         user.handle = session.alias.substr(0, LEN_HANDLE);
         user.netmail = session.email || "";
+        user.location = session.location || "";
         user.gender = user.gender || ' ';
 
         user.settings |= USER_ANSI;
@@ -596,6 +597,7 @@ var session = {
     alias: "",
     password: "",
     email: "",
+    location: "",
     rulesAccepted: false,
     confirmed: false
 };
@@ -606,6 +608,7 @@ var passwordBuffer = "";
 var passwordConfirmBuffer = "";
 var emailBuffer = "";
 var emailConfirmBuffer = "";
+var locationBuffer = "";
 
 var hotspotsSupported = (typeof console.add_hotspot === "function" && typeof console.clear_hotspots === "function");
 
@@ -617,6 +620,7 @@ function resetSession() {
     session.alias = "";
     session.password = "";
     session.email = "";
+    session.location = "";
     session.rulesAccepted = false;
     session.confirmed = false;
     backspaceBuffer = "";
@@ -626,6 +630,7 @@ function resetSession() {
     passwordConfirmBuffer = "";
     emailBuffer = "";
     emailConfirmBuffer = "";
+    locationBuffer = "";
 }
 
 /* ========================= state + timer management ========================= */
@@ -765,6 +770,9 @@ function pollInput() {
             break;
         case "email_confirm":
             handleEmailConfirmInput(key);
+            break;
+        case "location_prompt":
+            handleLocationInput(key);
             break;
         case "rules_prompt":
             if (keyUpper === "Y") {
@@ -1095,7 +1103,7 @@ function handlePasswordConfirmInput(key) {
         passwordConfirmBuffer = "";
         playAnimation(nodAnim);
         if (!session.email) transitionTo("email_prompt");
-        else transitionTo("rules_prompt");
+        else transitionTo("location_prompt");
         return;
     }
     if (code < 32) return;
@@ -1180,13 +1188,52 @@ function handleEmailConfirmInput(key) {
         }
         emailConfirmBuffer = "";
         playAnimation(nodAnim);
-        transitionTo("rules_prompt");
+        transitionTo("location_prompt");
         return;
     }
     if (code < 32) return;
     if (emailConfirmBuffer.length >= 48) return;
     emailConfirmBuffer += key;
     updateEmailDisplay(true);
+}
+
+function renderLocationScreen() {
+    main.clear();
+    main.gotoxy(3, 4);
+    main.putmsg("location:");
+    updateLocationDisplay();
+    main.draw();
+}
+
+function updateLocationDisplay() {
+    main.gotoxy(3, 6);
+    var shown = locationBuffer.length ? locationBuffer : "(blank)";
+    var padded = shown + spaces(Math.max(0, 48 - shown.length));
+    main.putmsg("\1h" + padded + "\1n");
+    main.draw();
+}
+
+function handleLocationInput(key) {
+    if (key.length !== 1) return;
+    var code = key.charCodeAt(0);
+    if (code === 8 || code === 127) {
+        if (locationBuffer.length > 0) {
+            locationBuffer = locationBuffer.substr(0, locationBuffer.length - 1);
+            updateLocationDisplay();
+        }
+        return;
+    }
+    if (code === 10 || code === 13) {
+        session.location = locationBuffer.trim();
+        playAnimation(nodAnim);
+        if (!session.email) transitionTo("email_prompt");
+        else transitionTo("rules_prompt");
+        return;
+    }
+    if (code < 32) return;
+    if (locationBuffer.length >= 48) return;
+    locationBuffer += key;
+    updateLocationDisplay();
 }
 
 function renderRulesScreen() {
@@ -1216,6 +1263,8 @@ function renderConfirmSummary() {
     main.putmsg("alias: \1h" + (session.alias || "(blank)") + "\1n");
     main.gotoxy(3, 11);
     main.putmsg("email : \1h" + (session.email || "(blank)") + "\1n");
+    main.gotoxy(3, 12);
+    main.putmsg("location: \1h" + (session.location || "(blank)") + "\1n");
     main.draw();
 }
 
@@ -1246,7 +1295,7 @@ function persistSession() {
         flags.USER_ANSI ? "1" : "0",
         flags.USER_COLOR ? "1" : "0"
     );
-    log(LOG_INFO, format("future_signup alias=%s email=%s %s", session.alias || "(blank)", session.email || "(blank)", flagsStr));
+    log(LOG_INFO, format("future_signup alias=%s email=%s location=%s %s", session.alias || "(blank)", session.email || "(blank)", session.location || "(blank)", flagsStr));
 }
 
 var defaultAnim = animations.first;
@@ -1452,6 +1501,15 @@ var states = {
             showTitle("CONFIRM EMAIL");
         }
     },
+    location_prompt: {
+        enter: function () {
+            locationBuffer = session.location || "";
+            centerLine(speechBubbleText, "where are you from? (optional)");
+            playAnimation(thinkAnim);
+            renderLocationScreen();
+            showTitle("LOCATION");
+        }
+    },
     rules_prompt: {
         enter: function () {
             session.rulesAccepted = false;
@@ -1525,7 +1583,10 @@ try {
 
 if (pendingLogon && !js.terminated) {
     try {
-        bbs.logon();
+        // User is already logged in from createAccountFromSession()
+        // Just need to run the normal logon procedure
+        log(LOG_INFO, 'future_signup: running logon procedure for ' + session.alias);
+        bbs.logon(); // Run normal logon procedure
     } catch (logonErr) {
         try { log(LOG_ERR, "future_signup logon failed: " + logonErr); } catch (_) { }
     }
