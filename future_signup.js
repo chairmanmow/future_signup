@@ -6,6 +6,15 @@ load("event-timer.js");
 /* ========================= constants ========================= */
 const SCREEN_WIDTH = console.screen_columns;
 const SCREEN_HEIGHT = console.screen_rows;
+const MIN_SCREEN_HEIGHT = 20;
+if (SCREEN_HEIGHT < MIN_SCREEN_HEIGHT) {
+    console.clear();
+    console.writeln("\r\n  Your terminal has " + SCREEN_HEIGHT + " rows but the signup wizard");
+    console.writeln("  requires at least " + MIN_SCREEN_HEIGHT + " rows.");
+    console.writeln("  Please resize your terminal and try again.\r\n");
+    mswait(3000);
+    exit();
+}
 const MOD_DIR = '/sbbs/mods/future_signup/';
 load(MOD_DIR + "post_signup.js");
 const SPRITE_META_FILE = MOD_DIR + "paperclip.sprite.json";
@@ -573,7 +582,7 @@ var root = new Frame(1, 1, SCREEN_WIDTH, SCREEN_HEIGHT, BG_BLACK | LIGHTGRAY);
 var button; // will define later
 var button2; // will define later
 var statePromptHeight = 3;
-var centeredContainer = new Frame(parseInt((SCREEN_WIDTH - 79) / 2) || 1, 1, 80, 24 || root.height, BG_LIGHTGRAY | BLACK, root);
+var centeredContainer = new Frame(parseInt((SCREEN_WIDTH - 79) / 2) || 1, 1, 80, Math.min(24, SCREEN_HEIGHT), BG_LIGHTGRAY | BLACK, root);
 log("created centered container at " + centeredContainer.x + "," + centeredContainer.y + " size " + centeredContainer.width + "x" + centeredContainer.height);
 var statePrompt = new Frame(centeredContainer.x, 1, centeredContainer.width, 3, BG_CYAN | WHITE, centeredContainer);
 var main = new Frame(centeredContainer.x, 4, centeredContainer.width, centeredContainer.height - statePromptHeight, BG_BLUE | WHITE, centeredContainer);
