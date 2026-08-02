@@ -27,8 +27,101 @@ const REACTION_DELAY_MS = 2500;
 const ALIAS_MAX_LENGTH = 24;
 const MIN_ANIMATION_TIMEOUT = 2000;
 /* ============================================================= */
-log("future_signup.js loaded, TEST_FLOW=" + (typeof TEST_FLOW !== "undefined" ? TEST_FLOW : "undefined"));
+/* ========================= mock mode ========================= */
+/*
+ * The sysop-menu entry (xtrn NEWUSERFLOW -> xtrn/new_user/new_user.js) runs
+ * the wizard for real - every prompt, animation and validation - but files no
+ * paperwork: no user record is created and the invoking sysop's own session is
+ * never re-logged-in as somebody else. Triggered by a "mock" load() argument,
+ * or by the legacy TEST_FLOW global for callers that still set it.
+ */
+var MOCK_MODE = (function () {
+    try {
+        if (typeof TEST_FLOW !== "undefined" && TEST_FLOW === true) return true;
+        if (typeof argv !== "undefined" && argv) {
+            for (var i = 0; i < argv.length; i++) {
+                var a = String(argv[i]).toLowerCase();
+                if (a === "mock" || a === "test" || a === "dry" || a === "dryrun") return true;
+            }
+        }
+    } catch (e) { }
+    return false;
+})();
+log(LOG_INFO, "future_signup.js loaded, mock=" + MOCK_MODE);
 console.autoterm |= USER_MOUSE;
+
+/* ========================= 3dBBS depth ========================= */
+/*
+ * On the 3dBBS terminal the wizard's frame stack renders at real stereo
+ * depths. Text can never come forward of the glass (protocol v1 - the glass IS
+ * the near plane), so CLIPPY "popping out" means CLIPPY sits AT the glass and
+ * everything else is pushed back behind him. His speech bubble trails just
+ * off his shoulder, the buttons float above the form, the form sits mid-field
+ * and the panel and root recede to the back wall.
+ *
+ * Layer index is the array index below, and layer 0 must stay the glass:
+ * anything written outside the frame diff (the cursor, printfile output)
+ * lands there.
+ */
+const SCENE3D_SPREAD = 4;   // world units from the glass to the back wall
+// Near to far. Tune the fractions freely - the client re-depths every painted
+// cell from the table, so depth is a table edit, not a repaint.
+var DEPTH_BAND_ORDER = ['glass', 'bubble', 'button', 'chrome', 'content', 'panel', 'backdrop'];
+var DEPTH_BANDS = {
+    glass: 0.0,      // CLIPPY, and anything unrecognized: the nearest plane there is
+    bubble: 0.12,    // his speech bubble, just off his shoulder
+    button: 0.3,     // clickable buttons float above the form
+    chrome: 0.42,    // the title bar: the instruction line, proud of the pane
+    content: 0.55,   // the main pane: prompts, input, the color swatches
+    panel: 0.8,      // the centered container the whole wizard sits in
+    backdrop: 1.0    // root: the far background
+};
+
+var Scene3dMod = null;
+try {
+    Scene3dMod = load("/sbbs/mods/load/scene3d.js");
+} catch (e) { try { log(LOG_WARNING, "future_signup scene3d load failed: " + e); } catch (_) { } }
+var depthLayers = null;
+
+/*
+ * Ancestry decides the band, identity first at each hop: the speech bubble and
+ * the buttons are children of `main`, and the sprite pane is a child of the
+ * container, so each has to match as itself before the walk reaches its parent
+ * and bands it with the surface behind it.
+ */
+function depthBandFor(frame) {
+    var node = frame;
+    for (var hops = 0; node && hops < 8; hops++) {
+        if (node === spritePane) return 'glass';
+        if (node === speechBubble || node === speechBubbleText) return 'bubble';
+        if (node === button || node === button2) return 'button';
+        if (node === main) return 'content';
+        if (node === statePrompt) return 'chrome';
+        if (node === centeredContainer) return 'panel';
+        if (node === root) return 'backdrop';
+        try { node = node.parent; } catch (e) { return 'glass'; }
+    }
+    return 'glass';
+}
+
+function initDepth() {
+    if (!Scene3dMod) return;
+    var version = null;
+    try { version = Scene3dMod.probe(500); } catch (e) { return; }
+    if (!Scene3dMod.supportsTextLayers(version)) return;
+    var layers = new Scene3dMod.TextDepthLayers({
+        spread: SCENE3D_SPREAD,
+        order: DEPTH_BAND_ORDER,
+        depths: DEPTH_BANDS,
+        bandFor: depthBandFor,
+        log: function (msg) { try { log(LOG_INFO, "future_signup " + msg); } catch (e) { } }
+    });
+    // The frames below do not exist yet; bandFor reads them lazily and only
+    // ever runs at cycle() time, which is later still.
+    if (layers.install(typeof Display !== "undefined" ? Display : null)) depthLayers = layers;
+}
+initDepth();
+
 Frame.prototype.drawBorder = function (color) {
     var msg;
     var theColor = color;
@@ -117,6 +210,42 @@ Frame.prototype.makeContentTransparent = function () {
 /* ========================= util helpers ========================= */
 var _creationDone = false;
 
+/**
+ * The account rules chksetup enforces (real name derivation, password
+ * length/obviousness/trashcan/quality) live in one shared module so this
+ * wizard and the fix_realnames backfill cannot drift apart.
+ */
+var UserPolicy = load("/sbbs/mods/load/user_policy.js");
+
+/** The real name we file for a handle; see user_policy.js for the rules. */
+function realNameFromAlias(alias) {
+    return UserPolicy.deriveRealName(alias) || UserPolicy.realNameFromAlias(alias);
+}
+
+/** The identity a password is checked against - it does not exist yet. */
+function signupIdentity() {
+    return {
+        alias: session.alias,
+        name: realNameFromAlias(session.alias),
+        handle: String(session.alias || "").substr(0, LEN_HANDLE)
+    };
+}
+
+/**
+ * True when another account already claims this address. Case-insensitive,
+ * and it skips deleted/inactive records - the same accounts aliasExists()
+ * ignores, so the two uniqueness rules agree on who counts as a live user.
+ */
+function emailExists(addr) {
+    if (!addr) return false;
+    try {
+        return system.matchuserdata(U_NETMAIL, addr) > 0;
+    } catch (e) {
+        try { log(LOG_WARNING, "future_signup emailExists failed: " + e); } catch (_) { }
+        return false;
+    }
+}
+
 function createAccountFromSession() {
     if (_creationDone) return { ok: false, err: "Create already attempted" };
 
@@ -125,6 +254,27 @@ function createAccountFromSession() {
         return { ok: false, err: "Alias not allowed" };
     if (system.matchuser(session.alias))
         return { ok: false, err: "Alias already exists" };
+    // Re-check at commit time: the address was free when they typed it, but
+    // another node may have claimed it while they finished the wizard.
+    if (session.email && emailExists(session.email))
+        return { ok: false, err: "Email already registered" };
+    // Last gate before the record exists: a password that fails policy must
+    // never reach the user file, whatever path got it into the session.
+    var pwProblem = UserPolicy.passwordProblem(
+        String(session.password || "").toUpperCase(), signupIdentity());
+    if (pwProblem) return { ok: false, err: pwProblem };
+    if (!UserPolicy.deriveRealName(session.alias))
+        return { ok: false, err: "Alias cannot produce a valid real name" };
+
+    // Mock run: every check above ran for real. Nothing below this line
+    // touches the user base or the caller's own session.
+    if (MOCK_MODE) {
+        _creationDone = true;
+        log(LOG_INFO, format("future_signup MOCK: would create alias=%s name=%s email=%s location=%s",
+            session.alias, realNameFromAlias(session.alias),
+            session.email || "(blank)", session.location || "(blank)"));
+        return { ok: true, test: true, alias: session.alias };
+    }
 
     // 1) allocate the user slot
     var nu;
@@ -170,7 +320,7 @@ function createAccountFromSession() {
         // we are now the new user record
         user.number = nu.number;
         user.alias = session.alias.substr(0, LEN_ALIAS);
-        user.name = session.alias.substr(0, LEN_NAME);
+        user.name = realNameFromAlias(session.alias);
         user.handle = session.alias.substr(0, LEN_HANDLE);
         user.netmail = session.email || "";
         user.location = session.location || "";
@@ -546,7 +696,7 @@ function centerMain(text, offsetY) {
 
 }
 function showTitle(message, hotspotSpecs) {
-    message = "\1r" + system.name + " BOOTSTRAP USER \1n" + message;
+    message = "\1r" + system.name + (MOCK_MODE ? " \1h\1yMOCK\1n\1r" : "") + " BOOTSTRAP USER \1n" + message;
     statePrompt.clear();
     statePrompt.gotoxy(1, 2);
     var line = centerInWidth(message, statePrompt.width);
@@ -796,8 +946,8 @@ function pollInput() {
             if (keyUpper === "Y") {
                 session.confirmed = true;
 
-                // Create (or dry-run if TEST_FLOW)
-                var res = createAccountFromSession(typeof TEST_FLOW !== "undefined" && TEST_FLOW === true);
+                // Create for real, or dry-run under MOCK_MODE
+                var res = createAccountFromSession();
 
                 if (!res.ok) {
                     // Show an inline error and let them fix things (usually alias)
@@ -1014,6 +1164,19 @@ function handleAliasInput(key) {
             updateAliasDisplay();
             return;
         }
+        // The real name is derived from the handle, so a handle that cannot
+        // produce a valid one (check_realname wants an alphabetic first
+        // character, and rejects anything in name.can) has to be caught HERE.
+        // Letting it through just files an account the audit flags anyway.
+        if (!UserPolicy.deriveRealName(trimmed)) {
+            playAnimation(shakeAnim);
+            centerLine(speechBubbleText, "\1h\1rthat one won't fly - start with a letter");
+            showTitle("PICK ANOTHER NAME");
+            aliasBuffer = "";
+            session.alias = "";
+            updateAliasDisplay();
+            return;
+        }
         session.alias = trimmed;
         playAnimation(nodAnim);
         if (!session.password) transitionTo("password_prompt");
@@ -1071,11 +1234,19 @@ function handlePasswordInput(key) {
         return;
     }
     if (code === 10 || code === 13) {
-        if (passwordBuffer.length < 4) {
+        // Same rules the stock new-user flow applies, checked against the
+        // string we will actually store (createAccountFromSession uppercases).
+        var problem = UserPolicy.passwordProblem(passwordBuffer.toUpperCase(), signupIdentity());
+        if (problem) {
             playAnimation(shakeAnim);
-            showTitle("password must be at least 4 characters");
-            centerLine(speechBubbleText, "\1rpassword must be at least 4 characters");
-
+            showTitle(problem);
+            centerLine(speechBubbleText, "\1r" + problem);
+            // Too short is fixable by typing more; the rest need a fresh
+            // password, and blind-editing a masked field is no kindness.
+            if (passwordBuffer.length >= UserPolicy.minPasswordLength()) {
+                passwordBuffer = "";
+                updatePasswordDisplay(false);
+            }
             return;
         }
         session.password = passwordBuffer;
@@ -1161,6 +1332,15 @@ function handleEmailInput(key) {
         if (!isValidEmail(trimmed)) {
             playAnimation(shakeAnim);
             showTitle("enter a valid email address");
+            return;
+        }
+        if (emailExists(trimmed)) {
+            playAnimation(shakeAnim);
+            centerLine(speechBubbleText, "\1h\1rthat address is already registered");
+            showTitle("EMAIL ALREADY IN USE");
+            emailBuffer = "";
+            session.email = "";
+            updateEmailDisplay(false);
             return;
         }
         session.email = trimmed;
@@ -1283,6 +1463,12 @@ function renderDoneScreen() {
     main.putmsg("alias registered: \1h" + (session.alias || "(blank)") + "\1n");
     main.gotoxy(3, 7);
     main.putmsg("email on file : \1h" + (session.email || "(blank)") + "\1n");
+    if (MOCK_MODE) {
+        main.gotoxy(3, 9);
+        main.putmsg("real name would be: \1h" + realNameFromAlias(session.alias) + "\1n");
+        main.gotoxy(3, 11);
+        main.putmsg("\1h\1ymock run - no account was created\1n");
+    }
     main.draw();
 }
 
@@ -1565,6 +1751,12 @@ function cleanup() {
         pendingTransitionEvent = null;
     }
     root.close();
+    // Un-patch frame.js and flatten the depth table: whatever runs next
+    // inherits a terminal with no stale stereo depth on any layer.
+    if (depthLayers) {
+        try { depthLayers.dispose(); } catch (e) { }
+        depthLayers = null;
+    }
 }
 
 function mainLoop() {
@@ -1579,7 +1771,9 @@ function mainLoop() {
     }
 
     cleanup();
-    showStandardBBSStats();
+    // Mock runs show the same closing screens but must not mail a "welcome"
+    // to whoever is actually logged in (the sysop testing the flow).
+    showStandardBBSStats(MOCK_MODE);
 }
 
 try {

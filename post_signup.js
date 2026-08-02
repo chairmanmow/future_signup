@@ -1,8 +1,10 @@
 load("sbbsdefs.js");
 
 
-function showStandardBBSStats() {
-    sendWelcomeMessage(user);
+// skipWelcomeMail: mock/dry runs still show the closing screens, but must not
+// mail a new-user welcome to whoever is actually logged in. Omitted = send.
+function showStandardBBSStats(skipWelcomeMail) {
+    if (!skipWelcomeMail) sendWelcomeMessage(user);
     console.clear();
 
     console.printfile(system.text_dir + "sbbs.msg", P_NOABORT);
