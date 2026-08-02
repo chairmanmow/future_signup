@@ -1,0 +1,10 @@
+{
+  "title": "LANGUAGE / IDIOMA / SPRACHE / LANGUE",
+  "prompt": "Choose your language / Wähle deine Sprache / Elige tu idioma / Choisissez votre langue",
+  "choices": [
+    { "code": "en", "key": "1", "name": "English" },
+    { "code": "de", "key": "2", "name": "Deutsch" },
+    { "code": "es", "key": "3", "name": "Español" },
+    { "code": "fr", "key": "4", "name": "Français" }
+  ]
+}

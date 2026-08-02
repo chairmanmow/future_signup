@@ -148,6 +148,56 @@ eq("null address is never taken", emailExists(null), "false");
 // A real lookup against the live user base: this address should not exist.
 eq("unused address is free", emailExists("nobody-" + LEN_NAME + "@example.invalid"), "false");
 
+// --- pre-account localization --------------------------------------------
+var I18n = load("/sbbs/mods/future_signup/signup_localization.js");
+eq("signup localization module loads", typeof I18n, "object");
+eq("all installed signup languages are offered", I18n.choices().length, 4);
+eq("English maps to Synchronet default language", I18n.activate("en") + ":" + I18n.nativeUserLang(), "en:");
+eq("Spanish maps to native text.es.ini", I18n.activate("es") + ":" + I18n.nativeUserLang(), "es:es");
+eq("Spanish copy is converted to CP437", I18n.text("common.yesLower").charCodeAt(1), 0xa1);
+eq("unknown language falls back to English", I18n.activate("xx"), "en");
+
+function tr(key, fallback, params) { return I18n.text(key, fallback, params); }
+var localizedErrorSrc = extractFunction("localizeSignupError");
+eq("localized signup error helper found", localizedErrorSrc !== null, "true");
+eval(localizedErrorSrc);
+I18n.activate("es");
+eq("password validation feedback is localized",
+    localizeSignupError("password must be at least 6 characters"),
+    "la contrase\xA4a debe tener al menos 6 caracteres");
+I18n.activate("en");
+
+eq("language picker is the initial state", src.indexOf('transitionTo("language_prompt")') >= 0, "true");
+eq("selected language is persisted to the user", src.indexOf("user.lang = SignupI18n.nativeUserLang()") >= 0, "true");
+var languageWriteAt = src.indexOf("user.lang = SignupI18n.nativeUserLang()");
+eq("language write precedes user sync", languageWriteAt < src.indexOf("bbs.user_sync();", languageWriteAt), "true");
+var mockGateAt = src.indexOf("if (MOCK_MODE) {", src.indexOf("function createAccountFromSession"));
+eq("mock mode returns before new_user", mockGateAt < src.indexOf("system.new_user", mockGateAt), "true");
+eq("native text reload precedes stock logon", src.indexOf("bbs.load_user_text();") < src.indexOf("bbs.logon(); // Run normal logon procedure"), "true");
+
+// Every translation deliberately covers the complete English signup keyset;
+// no language silently falls back for a forgotten prompt.
+var utf8Scope = {};
+load(utf8Scope, "utf8_utf16.js");
+function readLocale(code) {
+    var lf = new File("/sbbs/mods/future_signup/locales/" + code + ".json");
+    if (!lf.open("rb", true)) return null;
+    var value = JSON.parse(utf8Scope.utf8_utf16(lf.read()));
+    lf.close();
+    return value;
+}
+var baseLocale = readLocale("en");
+var localeCodes = ["de", "es", "fr"];
+var localeParity = true;
+for (var lc = 0; lc < localeCodes.length; lc++) {
+    var translatedLocale = readLocale(localeCodes[lc]);
+    for (var localeKey in baseLocale.strings) {
+        if (!baseLocale.strings.hasOwnProperty(localeKey)) continue;
+        if (!translatedLocale || typeof translatedLocale.strings[localeKey] !== "string") localeParity = false;
+    }
+}
+eq("translated signup locales cover every English key", localeParity, "true");
+
 // --- 3dBBS depth policy ---------------------------------------------------
 // The band table and the policy both come out of the shipped source, so this
 // tests what actually runs. The ancestry ORDER is the fragile part: the speech

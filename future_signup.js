@@ -17,6 +17,7 @@ if (SCREEN_HEIGHT < MIN_SCREEN_HEIGHT) {
 }
 const MOD_DIR = '/sbbs/mods/future_signup/';
 load(MOD_DIR + "post_signup.js");
+var SignupI18n = load(MOD_DIR + "signup_localization.js");
 const SPRITE_META_FILE = MOD_DIR + "paperclip.sprite.json";
 const DEFAULT_ATTR = WHITE | BG_BLUE;
 const MIN_FRAME_INTERVAL_MS = 100;
@@ -210,6 +211,34 @@ Frame.prototype.makeContentTransparent = function () {
 /* ========================= util helpers ========================= */
 var _creationDone = false;
 
+function tr(key, fallback, params) {
+    return SignupI18n.text(key, fallback, params);
+}
+
+function signupActionKey(key, fallback) {
+    return tr(key, fallback).charAt(0).toUpperCase();
+}
+
+function localizeSignupError(message) {
+    var value = String(message || "");
+    var count = /password must be at least ([0-9]+) characters/i.exec(value);
+    if (count) return tr("password.tooShort", value, { count: count[1] });
+    count = /password must be at most ([0-9]+) characters/i.exec(value);
+    if (count) return tr("password.tooLong", value, { count: count[1] });
+    if (value === "password can't be built from your name") return tr("password.nameError", value);
+    if (value === "that password is too common - pick another") return tr("password.commonError", value);
+    if (value === "password needs more variety") return tr("password.varietyError", value);
+    if (value === "Alias not allowed" || value === "Alias cannot produce a valid real name")
+        return tr("error.aliasNotAllowed", value);
+    if (value === "Alias already exists") return tr("error.aliasExists", value);
+    if (value === "Email already registered") return tr("error.emailExists", value);
+    if (value === "auto-login failed") return tr("error.autoLogin", value);
+    if (value === "signup crashed") return tr("error.signupCrashed", value);
+    if (value.indexOf("new_user()") === 0 || value === "Create already attempted")
+        return tr("error.create", value);
+    return value || tr("error.create", "could not create user");
+}
+
 /**
  * The account rules chksetup enforces (real name derivation, password
  * length/obviousness/trashcan/quality) live in one shared module so this
@@ -324,6 +353,9 @@ function createAccountFromSession() {
         user.handle = session.alias.substr(0, LEN_HANDLE);
         user.netmail = session.email || "";
         user.location = session.location || "";
+        // English is Synchronet's native blank/default language code; the
+        // installed translated text files use de/es/fr.
+        user.lang = SignupI18n.nativeUserLang();
         user.gender = user.gender || ' ';
 
         user.settings |= USER_ANSI;
@@ -349,6 +381,7 @@ function createAccountFromSession() {
         if (desiredPassword) user.security.password = desiredPassword;
 
         bbs.user_sync();
+        bbs.load_user_text();
         bbs.user_event(EVENT_NEWUSER);
         bbs.user_sync();
 
@@ -749,6 +782,7 @@ root.cycle();
 var animator = new SpriteAnimator(spritePane, spriteData.frames, animations.map, animations.first);
 
 var session = {
+    lang: "en",
     mouse: null,
     color: null,
     exascii: null,
@@ -772,6 +806,8 @@ var locationBuffer = "";
 var hotspotsSupported = (typeof console.add_hotspot === "function" && typeof console.clear_hotspots === "function");
 
 function resetSession() {
+    session.lang = "en";
+    SignupI18n.activate("en");
     session.mouse = null;
     session.color = null;
     session.exascii = null;
@@ -881,6 +917,16 @@ function pollInput() {
     var keyUpper = key.length === 1 ? key.toUpperCase() : key;
 
     switch (currentState) {
+        case "language_prompt":
+            var languageChoices = SignupI18n.choices();
+            for (var languageIndex = 0; languageIndex < languageChoices.length; languageIndex++) {
+                var languageChoice = languageChoices[languageIndex];
+                if (keyUpper !== languageChoice.key) continue;
+                session.lang = SignupI18n.activate(languageChoice.code);
+                transitionTo("welcome");
+                break;
+            }
+            break;
         case "welcome":
             transitionTo("mouse_prompt");
             break;
@@ -889,25 +935,25 @@ function pollInput() {
                 session.mouse = true;
                 transitionTo("mouse_success");
             }
-            if (keyUpper === "N") {
+            if (keyUpper === signupActionKey("key.no", "N")) {
                 session.mouse = false;
                 transitionTo("mouse_fail");
             }
             break;
         case "color_prompt":
-            if (keyUpper === "Y") {
+            if (keyUpper === signupActionKey("key.yes", "Y")) {
                 session.color = true;
                 transitionTo("color_yes");
-            } else if (keyUpper === "N") {
+            } else if (keyUpper === signupActionKey("key.no", "N")) {
                 session.color = false;
                 transitionTo("color_no");
             }
             break;
         case "exascii_prompt":
-            if (keyUpper === "L") {
+            if (keyUpper === signupActionKey("key.fontGood", "L")) {
                 session.exascii = true;
                 transitionTo("exascii_ok");
-            } else if (keyUpper === "B") {
+            } else if (keyUpper === signupActionKey("key.fontBad", "B")) {
                 session.exascii = false;
                 transitionTo("exascii_bad");
             }
@@ -934,16 +980,16 @@ function pollInput() {
             handleLocationInput(key);
             break;
         case "rules_prompt":
-            if (keyUpper === "Y") {
+            if (keyUpper === signupActionKey("key.yes", "Y")) {
                 session.rulesAccepted = true;
                 transitionTo("confirm_prompt");
-            } else if (keyUpper === "N") {
+            } else if (keyUpper === signupActionKey("key.no", "N")) {
                 session.rulesAccepted = false;
                 transitionTo("alias_prompt");
             }
             break;
         case "confirm_prompt":
-            if (keyUpper === "Y") {
+            if (keyUpper === signupActionKey("key.yes", "Y")) {
                 session.confirmed = true;
 
                 // Create for real, or dry-run under MOCK_MODE
@@ -952,7 +998,7 @@ function pollInput() {
                 if (!res.ok) {
                     // Show an inline error and let them fix things (usually alias)
                     playAnimation(shakeAnim);
-                    centerLine(speechBubbleText, "\1r" + (res.err || "could not create user"));
+                    centerLine(speechBubbleText, "\1r" + localizeSignupError(res.err));
                     // Bounce back to alias to fix name collisions, etc.
                     transitionTo("alias_prompt");
                 } else if (res.test) {
@@ -967,7 +1013,7 @@ function pollInput() {
                         running = false;
                     });
                 }
-            } else if (keyUpper === "N") {
+            } else if (keyUpper === signupActionKey("key.no", "N")) {
                 transitionTo("alias_prompt");
             }
             break;
@@ -990,8 +1036,27 @@ function startInputLoop() {
     inputEvent = timer.addEvent(INPUT_POLL_INTERVAL, true, pollInput);
 }
 
+function languageName(code) {
+    var choices = SignupI18n.choices();
+    for (var i = 0; i < choices.length; i++) {
+        if (choices[i].code === code) return choices[i].name;
+    }
+    return code || "English";
+}
+
+function renderLanguageScreen() {
+    main.clear();
+    var choices = SignupI18n.choices();
+    var startY = 3;
+    for (var i = 0; i < choices.length; i++) {
+        main.gotoxy(20, startY + i * 2);
+        main.putmsg("\1h\1w[" + choices[i].key + "]\1n " + choices[i].name);
+    }
+    main.draw();
+}
+
 function renderColorPrompt() {
-    centerLine(speechBubbleText, "do these look like 8 distinct shades - not blinking?");
+    centerLine(speechBubbleText, tr("color.question", "do these look like 8 distinct shades - not blinking?"));
     main.clear();
     for (var i = 0; i < 8; i++) {
         var spacePer = 6;
@@ -1002,8 +1067,8 @@ function renderColorPrompt() {
         main.putmsg("   " + i + "   ");
     }
     main.attr = BG_BLUE | LIGHTGRAY;
-    var yesLabel = "[Y] Yes";
-    var noLabel = "[N] No";
+    var yesLabel = tr("color.yesButton", "[Y] Yes");
+    var noLabel = tr("color.noButton", "[N] No");
     var spacing = "  ";
     var margin = 2;
     var totalWidth = 20;
@@ -1022,13 +1087,13 @@ function renderColorPrompt() {
     button.draw(); button2.draw();
     main.draw();
     main.cycle();
-    addHotspotForFrame(button, "Y");
-    addHotspotForFrame(button2, "N");
+    addHotspotForFrame(button, signupActionKey("key.yes", "Y"));
+    addHotspotForFrame(button2, signupActionKey("key.no", "N"));
 }
 
 function renderExasciiPrompt() {
     button.clear(); button.close(); button = null; button2.clear(); button2.close(); button2 = null; main.cycle();
-    centerLine(speechBubbleText, "do these corners look tidy? [L/B]");
+    centerLine(speechBubbleText, tr("font.question", "do these corners look tidy? [L/B]"));
     main.clear();
     var tidy = ["\xDA\xC4\xC4\xBF", "\xB3  \xB3", "\xC0\xC4\xC4\xD9"];
     var messy = ["+--+", "|  |", "+--'`"];
@@ -1045,8 +1110,8 @@ function renderExasciiPrompt() {
     var margin = 2;
     var excess = parseInt((console.screen_columns - 80) / 2);
     var start = (main.width - (totalWidth * 2) + margin) / 2 + excess;
-    var yesLabel = "[L] Looks Good";
-    var noLabel = "[B] Broken";
+    var yesLabel = tr("font.goodButton", "[L] Looks Good");
+    var noLabel = tr("font.badButton", "[B] Broken");
     //((main.width - totalWidth) / 2 | 0) + 1;
     var buttonY = main.height - spritePane.height - statePrompt.height;
     button = new Frame(start, buttonY, totalWidth, 3, BG_GREEN | LIGHTGRAY, main);
@@ -1059,8 +1124,8 @@ function renderExasciiPrompt() {
     button.draw(); button2.draw();
     main.draw();
     main.cycle();
-    addHotspotForFrame(button, "L");
-    addHotspotForFrame(button2, "B");
+    addHotspotForFrame(button, signupActionKey("key.fontGood", "L"));
+    addHotspotForFrame(button2, signupActionKey("key.fontBad", "B"));
 }
 
 function resetBackspaceProgress() {
@@ -1071,16 +1136,16 @@ function resetBackspaceProgress() {
 function renderBackspaceScreen() {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg("type: abc");
+    main.putmsg(tr("keyboard.type", "type: abc"));
     main.gotoxy(3, 6);
-    main.putmsg("input: ");
+    main.putmsg(tr("keyboard.input", "input: "));
     updateBackspaceDisplay();
     main.draw();
 }
 
 function updateBackspaceDisplay() {
     main.gotoxy(11, 6);
-    var shown = backspaceBuffer.length ? backspaceBuffer : "(empty)";
+    var shown = backspaceBuffer.length ? backspaceBuffer : tr("common.empty", "(empty)");
     var padded = shown + spaces(Math.max(0, 20 - shown.length));
     main.putmsg("\1h" + padded + "\1n");
     main.draw();
@@ -1113,8 +1178,8 @@ function handleBackspaceInput(key) {
             updateBackspaceDisplay();
             if (backspaceBuffer.length === expected.length) {
                 backspaceStage = "erase";
-                centerLine(speechBubbleText, "now backspace to erase it");
-                showTitle("KEYBOARD TEST");
+                centerLine(speechBubbleText, tr("keyboard.erase", "now backspace to erase it"));
+                showTitle(tr("keyboard.title", "KEYBOARD TEST"));
             }
         }
     }
@@ -1123,7 +1188,7 @@ function handleBackspaceInput(key) {
 function renderAliasScreen() {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg("alias: ");
+    main.putmsg(tr("alias.label", "alias: "));
     aliasBuffer = session.alias || "";
     updateAliasDisplay();
     main.draw();
@@ -1131,7 +1196,7 @@ function renderAliasScreen() {
 
 function updateAliasDisplay() {
     main.gotoxy(11, 4);
-    var shown = aliasBuffer.length ? aliasBuffer : "(blank)";
+    var shown = aliasBuffer.length ? aliasBuffer : tr("common.blank", "(blank)");
     var padded = shown + spaces(Math.max(0, ALIAS_MAX_LENGTH - shown.length));
     main.putmsg("\1h" + padded + "\1n");
     main.draw();
@@ -1153,12 +1218,12 @@ function handleAliasInput(key) {
         var trimmed = aliasBuffer.trim();
         if (!trimmed.length) {
             playAnimation(shakeAnim);
-            showTitle("alias can't be blank");
+            showTitle(tr("alias.blankError", "alias can't be blank"));
             return;
         }
         if (aliasExists(trimmed)) {
             playAnimation(shakeAnim);
-            centerLine(speechBubbleText, "\1h\1ralias in use; pick another");
+            centerLine(speechBubbleText, "\1h\1r" + tr("alias.usedError", "alias in use; pick another"));
             aliasBuffer = "";
             session.alias = "";
             updateAliasDisplay();
@@ -1170,8 +1235,8 @@ function handleAliasInput(key) {
         // Letting it through just files an account the audit flags anyway.
         if (!UserPolicy.deriveRealName(trimmed)) {
             playAnimation(shakeAnim);
-            centerLine(speechBubbleText, "\1h\1rthat one won't fly - start with a letter");
-            showTitle("PICK ANOTHER NAME");
+            centerLine(speechBubbleText, "\1h\1r" + tr("alias.invalidError", "that one won't fly - start with a letter"));
+            showTitle(tr("alias.pickAnother", "PICK ANOTHER NAME"));
             aliasBuffer = "";
             session.alias = "";
             updateAliasDisplay();
@@ -1209,14 +1274,16 @@ function aliasExists(name) {
 function renderPasswordScreen(isConfirm) {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg(isConfirm ? "confirm password:" : "password:");
+    main.putmsg(isConfirm
+        ? tr("password.confirmLabel", "confirm password:")
+        : tr("password.label", "password:"));
     updatePasswordDisplay(isConfirm);
     main.draw();
 }
 
 function updatePasswordDisplay(isConfirm) {
     var buffer = isConfirm ? passwordConfirmBuffer : passwordBuffer;
-    var placeholder = "(blank)";
+    var placeholder = tr("common.blank", "(blank)");
     var shown = buffer.length ? repeat(buffer.length, '*') : placeholder;
     main.gotoxy(3, 6);
     main.putmsg("\1h" + shown + "\1n" + spaces(Math.max(0, 32 - shown.length)));
@@ -1239,8 +1306,9 @@ function handlePasswordInput(key) {
         var problem = UserPolicy.passwordProblem(passwordBuffer.toUpperCase(), signupIdentity());
         if (problem) {
             playAnimation(shakeAnim);
-            showTitle(problem);
-            centerLine(speechBubbleText, "\1r" + problem);
+            var localizedProblem = localizeSignupError(problem);
+            showTitle(localizedProblem);
+            centerLine(speechBubbleText, "\1r" + localizedProblem);
             // Too short is fixable by typing more; the rest need a fresh
             // password, and blind-editing a masked field is no kindness.
             if (passwordBuffer.length >= UserPolicy.minPasswordLength()) {
@@ -1273,7 +1341,7 @@ function handlePasswordConfirmInput(key) {
     if (code === 10 || code === 13) {
         if (passwordConfirmBuffer !== session.password) {
             playAnimation(shakeAnim);
-            showTitle("passwords do not match");
+            showTitle(tr("password.mismatch", "passwords do not match"));
             passwordBuffer = "";
             passwordConfirmBuffer = "";
             session.password = "";
@@ -1295,14 +1363,14 @@ function handlePasswordConfirmInput(key) {
 function renderEmailScreen(isConfirm) {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg(isConfirm ? "confirm email:" : "email:");
+    main.putmsg(isConfirm ? tr("email.confirmLabel", "confirm email:") : tr("email.label", "email:"));
     updateEmailDisplay(isConfirm);
     main.draw();
 }
 
 function updateEmailDisplay(isConfirm) {
     var buffer = isConfirm ? emailConfirmBuffer : emailBuffer;
-    var placeholder = "(blank)";
+    var placeholder = tr("common.blank", "(blank)");
     var shown = buffer.length ? buffer : placeholder;
     main.gotoxy(3, 6);
     main.putmsg("\1h" + shown + "\1n" + spaces(Math.max(0, 48 - shown.length)));
@@ -1331,13 +1399,13 @@ function handleEmailInput(key) {
         var trimmed = emailBuffer.trim();
         if (!isValidEmail(trimmed)) {
             playAnimation(shakeAnim);
-            showTitle("enter a valid email address");
+            showTitle(tr("email.invalid", "enter a valid email address"));
             return;
         }
         if (emailExists(trimmed)) {
             playAnimation(shakeAnim);
-            centerLine(speechBubbleText, "\1h\1rthat address is already registered");
-            showTitle("EMAIL ALREADY IN USE");
+            centerLine(speechBubbleText, "\1h\1r" + tr("email.used", "that address is already registered"));
+            showTitle(tr("email.usedTitle", "EMAIL ALREADY IN USE"));
             emailBuffer = "";
             session.email = "";
             updateEmailDisplay(false);
@@ -1368,7 +1436,7 @@ function handleEmailConfirmInput(key) {
         var trimmed = emailConfirmBuffer.trim();
         if (trimmed !== session.email) {
             playAnimation(shakeAnim);
-            showTitle("email addresses do not match");
+            showTitle(tr("email.mismatch", "email addresses do not match"));
             emailBuffer = "";
             emailConfirmBuffer = "";
             session.email = "";
@@ -1389,14 +1457,14 @@ function handleEmailConfirmInput(key) {
 function renderLocationScreen() {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg("location:");
+    main.putmsg(tr("location.label", "location:"));
     updateLocationDisplay();
     main.draw();
 }
 
 function updateLocationDisplay() {
     main.gotoxy(3, 6);
-    var shown = locationBuffer.length ? locationBuffer : "(blank)";
+    var shown = locationBuffer.length ? locationBuffer : tr("common.blank", "(blank)");
     var padded = shown + spaces(Math.max(0, 48 - shown.length));
     main.putmsg("\1h" + padded + "\1n");
     main.draw();
@@ -1427,47 +1495,55 @@ function handleLocationInput(key) {
 
 function renderRulesScreen() {
     main.clear();
-    centerMain("keep it short. keep it kind. no spoilers in public.");
-    centerMain("\1h\1wAccept? [Y]es / [N]o", 2);
+    centerMain(tr("rules.copy", "keep it short. keep it kind. no spoilers in public."));
+    centerMain("\1h\1w" + tr("rules.accept", "Accept? [Y]es / [N]o"), 2);
 }
 
 function boolLabel(val) {
     if (val === null) return "?";
-    return val ? "yes" : "no";
+    return val ? tr("common.yesLower", "yes") : tr("common.noLower", "no");
 }
 
 function renderConfirmSummary() {
     main.clear();
     main.gotoxy(3, 4);
-    main.putmsg(format("mouse input: %s", boolLabel(session.mouse)));
+    main.putmsg(tr("summary.language", "language: {value}", { value: languageName(session.lang) }));
     main.gotoxy(3, 5);
-    main.putmsg(format("color depth: %s", boolLabel(session.color)));
+    main.putmsg(tr("summary.mouse", "mouse input: {value}", { value: boolLabel(session.mouse) }));
     main.gotoxy(3, 6);
-    main.putmsg(format("exascii: %s", boolLabel(session.exascii)));
+    main.putmsg(tr("summary.color", "color depth: {value}", { value: boolLabel(session.color) }));
     main.gotoxy(3, 7);
-    main.putmsg(format("backspace: %s", session.backspace ? "yes" : "no"));
+    main.putmsg(tr("summary.exascii", "exascii: {value}", { value: boolLabel(session.exascii) }));
     main.gotoxy(3, 8);
-    main.putmsg(format("rules ok: %s", session.rulesAccepted ? "yes" : "no"));
-    main.gotoxy(3, 10);
-    main.putmsg("alias: \1h" + (session.alias || "(blank)") + "\1n");
+    main.putmsg(tr("summary.backspace", "backspace: {value}", { value: boolLabel(session.backspace) }));
+    main.gotoxy(3, 9);
+    main.putmsg(tr("summary.rules", "rules ok: {value}", { value: boolLabel(session.rulesAccepted) }));
     main.gotoxy(3, 11);
-    main.putmsg("email : \1h" + (session.email || "(blank)") + "\1n");
+    main.putmsg(tr("summary.alias", "alias: {value}", { value: "\1h" + (session.alias || tr("common.blank", "(blank)")) + "\1n" }));
     main.gotoxy(3, 12);
-    main.putmsg("location: \1h" + (session.location || "(blank)") + "\1n");
+    main.putmsg(tr("summary.email", "email: {value}", { value: "\1h" + (session.email || tr("common.blank", "(blank)")) + "\1n" }));
+    main.gotoxy(3, 13);
+    main.putmsg(tr("summary.location", "location: {value}", { value: "\1h" + (session.location || tr("common.blank", "(blank)")) + "\1n" }));
     main.draw();
 }
 
 function renderDoneScreen() {
     main.clear();
     main.gotoxy(3, 5);
-    main.putmsg("alias registered: \1h" + (session.alias || "(blank)") + "\1n");
+    main.putmsg(tr("done.alias", "alias registered: {value}", {
+        value: "\1h" + (session.alias || tr("common.blank", "(blank)")) + "\1n"
+    }));
     main.gotoxy(3, 7);
-    main.putmsg("email on file : \1h" + (session.email || "(blank)") + "\1n");
+    main.putmsg(tr("done.email", "email on file: {value}", {
+        value: "\1h" + (session.email || tr("common.blank", "(blank)")) + "\1n"
+    }));
     if (MOCK_MODE) {
         main.gotoxy(3, 9);
-        main.putmsg("real name would be: \1h" + realNameFromAlias(session.alias) + "\1n");
+        main.putmsg(tr("done.realName", "real name would be: {value}", {
+            value: "\1h" + realNameFromAlias(session.alias) + "\1n"
+        }));
         main.gotoxy(3, 11);
-        main.putmsg("\1h\1ymock run - no account was created\1n");
+        main.putmsg("\1h\1y" + tr("done.mock", "mock run - no account was created") + "\1n");
     }
     main.draw();
 }
@@ -1490,7 +1566,9 @@ function persistSession() {
         flags.USER_ANSI ? "1" : "0",
         flags.USER_COLOR ? "1" : "0"
     );
-    log(LOG_INFO, format("future_signup alias=%s email=%s location=%s %s", session.alias || "(blank)", session.email || "(blank)", session.location || "(blank)", flagsStr));
+    log(LOG_INFO, format("future_signup alias=%s email=%s location=%s lang=%s %s",
+        session.alias || "(blank)", session.email || "(blank)", session.location || "(blank)",
+        session.lang || "en", flagsStr));
 }
 
 var defaultAnim = animations.first;
@@ -1503,28 +1581,38 @@ var nodAnim = chooseAnimation("nod_yes", idleAnim);
 var shakeAnim = chooseAnimation("shake_no", shrugAnim);
 
 var states = {
-    welcome: {
+    language_prompt: {
         enter: function () {
             resetSession();
-            centerLine(speechBubbleText, "hiya! i'll keep this fast. ready?");
+            centerLine(speechBubbleText, SignupI18n.choicePrompt());
+            renderLanguageScreen();
+            playAnimation(pointAnim);
+            showTitle(SignupI18n.choiceTitle());
+        }
+    },
+    welcome: {
+        enter: function () {
+            centerLine(speechBubbleText, tr("welcome.bubble", "hiya! i'll keep this fast. ready?"));
             main.clear();
             main.draw();
             playAnimation(idleAnim);
             showTitle('');
-            centerMain("press any key to begin.");
+            centerMain(tr("welcome.begin", "press any key to begin."));
         }
     },
     mouse_prompt: {
         enter: function () {
             console.mouse_mode = true;
             seconds = MOUSE_TIMEOUT_MS / 1000;
-            centerLine(speechBubbleText, "click big button in \1h\1w" + seconds + "\1n seconds for \1h\1gYES\1n or press \1h\1r[N]\1n now for '\1h\1rno\1n'.");
+            centerLine(speechBubbleText, tr("mouse.prompt",
+                "click big button in {seconds} seconds for YES or press [N] now for 'no'.",
+                { seconds: seconds }));
             main.clear();
             buttonWidth = main.width / 2;
             buttonY = main.height / 2 - statePrompt.height;
             var excess = parseInt((console.screen_columns - 80) / 2);
             button = new Frame(parseInt(main.width / 4) + excess, buttonY, buttonWidth, 5, BG_GREEN | WHITE, main);
-            var clickLabel = "[ CLICK HERE WITH MOUSE ]";
+            var clickLabel = tr("mouse.click", "[ CLICK HERE WITH MOUSE ]");
             var clickStart = ((main.width - clickLabel.length) / 2 | 0) + 1;
             // main.gotoxy(clickStart, 3);
             button.open();
@@ -1543,7 +1631,7 @@ var states = {
             });
             addHotspotForFrame(button, "~");
             playAnimation(pointAnim);
-            showTitle("MOUSE TEST", [{ label: "press ~", cmd: "~" }]);
+            showTitle(tr("mouse.title", "MOUSE TEST"), [{ label: "press ~", cmd: "~" }]);
             scheduleStateEvent(MOUSE_TIMEOUT_MS, function () {
                 session.mouse = false;
                 transitionTo("mouse_fail");
@@ -1554,9 +1642,9 @@ var states = {
         enter: function () {
             if (buttonInterval) buttonInterval.abort = true;
             session.mouse = true;
-            centerLine(speechBubbleText, "clicks working. sweet.");
+            centerLine(speechBubbleText, tr("mouse.success", "clicks working. sweet."));
             playAnimation(celebrateAnim);
-            showTitle("nice! moving on...");
+            showTitle(tr("mouse.successTitle", "nice! moving on..."));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("color_prompt");
             });
@@ -1566,9 +1654,9 @@ var states = {
         enter: function () {
             if (buttonInterval) buttonInterval.abort = true;
             session.mouse = false;
-            centerLine(speechBubbleText, "no click? no prob. keys it is.");
+            centerLine(speechBubbleText, tr("mouse.fail", "no click? no prob. keys it is."));
             playAnimation(shrugAnim);
-            showTitle("keyboard it is");
+            showTitle(tr("mouse.failTitle", "keyboard it is"));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("color_prompt");
             });
@@ -1582,18 +1670,18 @@ var states = {
             session.color = null;
             playAnimation(thinkAnim);
             renderColorPrompt();
-            showTitle("COLOR TEST", [
-                { label: "[Y] looks right", cmd: "Y" },
-                { label: "[N] looks off", cmd: "N" }
+            showTitle(tr("color.title", "COLOR TEST"), [
+                { label: tr("color.yesOption", "[Y] looks right"), cmd: signupActionKey("key.yes", "Y") },
+                { label: tr("color.noOption", "[N] looks off"), cmd: signupActionKey("key.no", "N") }
             ]);
         }
     },
     color_yes: {
         enter: function () {
             session.color = true;
-            centerLine(speechBubbleText, "great!");
+            centerLine(speechBubbleText, tr("color.success", "great!"));
             playAnimation(nodAnim);
-            showTitle("cool, next up...");
+            showTitle(tr("color.successTitle", "cool, next up..."));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("exascii_prompt");
             });
@@ -1602,9 +1690,9 @@ var states = {
     color_no: {
         enter: function () {
             session.color = false;
-            centerLine(speechBubbleText, "no worries, we'll adapt.");
+            centerLine(speechBubbleText, tr("color.fail", "no worries, we'll adapt."));
             playAnimation(shakeAnim);
-            showTitle("thanks, logging it");
+            showTitle(tr("color.failTitle", "thanks, logging it"));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("exascii_prompt");
             });
@@ -1615,17 +1703,17 @@ var states = {
             session.exascii = null;
             playAnimation(pointAnim);
             renderExasciiPrompt();
-            showTitle("FONT TEST", [
-                { label: "[L] tidy", cmd: "L" },
-                { label: "[B] busted", cmd: "B" }
+            showTitle(tr("font.title", "FONT TEST"), [
+                { label: tr("font.goodOption", "[L] tidy"), cmd: signupActionKey("key.fontGood", "L") },
+                { label: tr("font.badOption", "[B] busted"), cmd: signupActionKey("key.fontBad", "B") }
             ]);
         }
     },
     exascii_ok: {
         enter: function () {
-            centerLine(speechBubbleText, "tidy corners. nice!");
+            centerLine(speechBubbleText, tr("font.success", "tidy corners. nice!"));
             playAnimation(nodAnim);
-            showTitle("noted");
+            showTitle(tr("font.successTitle", "noted"));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("backspace_prompt");
             });
@@ -1633,9 +1721,9 @@ var states = {
     },
     exascii_bad: {
         enter: function () {
-            centerLine(speechBubbleText, "got it. we'll watch for glitches.");
+            centerLine(speechBubbleText, tr("font.fail", "got it. we'll watch for glitches."));
             playAnimation(shakeAnim);
-            showTitle("we'll adjust");
+            showTitle(tr("font.failTitle", "we'll adjust"));
             scheduleStateEvent(REACTION_DELAY_MS, function () {
                 transitionTo("backspace_prompt");
             });
@@ -1645,97 +1733,98 @@ var states = {
         enter: function () {
             button.clear(); button.close(); button = null; button2.clear(); button2.close(); button2 = null; main.cycle();
             session.backspace = false;
-            centerLine(speechBubbleText, "type abc, then erase to empty.");
+            centerLine(speechBubbleText, tr("keyboard.bubble", "type abc, then erase to empty."));
             playAnimation(thinkAnim);
             resetBackspaceProgress();
             renderBackspaceScreen();
-            showTitle("type the letters, then Backspace");
+            showTitle(tr("keyboard.title", "type the letters, then Backspace"));
         }
     },
     alias_prompt: {
         enter: function () {
-            centerLine(speechBubbleText, "pick a name. we'll make it yours.");
+            centerLine(speechBubbleText, tr("alias.bubble", "pick a name. we'll make it yours."));
             playAnimation(pointAnim);
             renderAliasScreen();
-            showTitle("USERNAME SELECTION");
+            showTitle(tr("alias.title", "USERNAME SELECTION"));
         }
     },
     password_prompt: {
         enter: function () {
             passwordBuffer = "";
-            centerLine(speechBubbleText, "Nice name, \1h\1w" + session.alias + "\1h\1y. \r\n Set a password.");
+            centerLine(speechBubbleText, tr("password.bubble", "Nice name, {alias}. Set a password.",
+                { alias: "\1h\1w" + session.alias + "\1h\1y" }));
             playAnimation(thinkAnim);
             renderPasswordScreen(false);
-            showTitle("SET PASSWORD");
+            showTitle(tr("password.title", "SET PASSWORD"));
         }
     },
     password_confirm: {
         enter: function () {
             passwordConfirmBuffer = "";
-            centerLine(speechBubbleText, "confirm password.");
+            centerLine(speechBubbleText, tr("password.confirmBubble", "confirm password."));
             playAnimation(pointAnim);
             renderPasswordScreen(true);
-            showTitle("VERIFY PASSWORD");
+            showTitle(tr("password.confirmTitle", "VERIFY PASSWORD"));
         }
     },
     email_prompt: {
         enter: function () {
             emailBuffer = session.email || "";
-            centerLine(speechBubbleText, "what's your email?");
+            centerLine(speechBubbleText, tr("email.bubble", "what's your email?"));
             playAnimation(thinkAnim);
             renderEmailScreen(false);
-            showTitle("Recovery email address");
+            showTitle(tr("email.title", "Recovery email address"));
         }
     },
     email_confirm: {
         enter: function () {
             emailConfirmBuffer = "";
-            centerLine(speechBubbleText, "confirm email.");
+            centerLine(speechBubbleText, tr("email.confirmBubble", "confirm email."));
             playAnimation(pointAnim);
             renderEmailScreen(true);
-            showTitle("CONFIRM EMAIL");
+            showTitle(tr("email.confirmTitle", "CONFIRM EMAIL"));
         }
     },
     location_prompt: {
         enter: function () {
             locationBuffer = session.location || "";
-            centerLine(speechBubbleText, "where are you from? (optional)");
+            centerLine(speechBubbleText, tr("location.bubble", "where are you from? (optional)"));
             playAnimation(thinkAnim);
             renderLocationScreen();
-            showTitle("LOCATION");
+            showTitle(tr("location.title", "LOCATION"));
         }
     },
     rules_prompt: {
         enter: function () {
             session.rulesAccepted = false;
-            centerLine(speechBubbleText, "house rules-short + kind.");
+            centerLine(speechBubbleText, tr("rules.bubble", "house rules-short + kind."));
             playAnimation(thinkAnim);
             renderRulesScreen();
-            showTitle("RULES", [
-                { label: "[Y] I'm in", cmd: "Y" },
-                { label: "[N] tweak alias", cmd: "N" }
+            showTitle(tr("rules.title", "RULES"), [
+                { label: tr("rules.yes", "[Y] I'm in"), cmd: signupActionKey("key.yes", "Y") },
+                { label: tr("rules.no", "[N] tweak alias"), cmd: signupActionKey("key.no", "N") }
             ]);
         }
     },
     confirm_prompt: {
         enter: function () {
             session.confirmed = false;
-            centerLine(speechBubbleText, "all set? i'll file the paperwork.");
+            centerLine(speechBubbleText, tr("confirm.bubble", "all set? i'll file the paperwork."));
             playAnimation(thinkAnim);
             renderConfirmSummary();
-            centerMain("\1h\1wAccept? [Y]es / [N]o", 2);
-            showTitle("VERIFY DETAILS", [
-                { label: "[Y] confirm", cmd: "Y" },
-                { label: "[N] edit alias", cmd: "N" }
+            centerMain("\1h\1w" + tr("confirm.accept", "Accept? [Y]es / [N]o"), 2);
+            showTitle(tr("confirm.title", "VERIFY DETAILS"), [
+                { label: tr("confirm.yes", "[Y] confirm"), cmd: signupActionKey("key.yes", "Y") },
+                { label: tr("confirm.no", "[N] edit alias"), cmd: signupActionKey("key.no", "N") }
             ]);
         }
     },
     done_prompt: {
         enter: function () {
-            centerLine(speechBubbleText, "welcome aboard.");
+            centerLine(speechBubbleText, tr("done.bubble", "welcome aboard."));
             playAnimation(celebrateAnim);
             renderDoneScreen();
-            showTitle("SIGNUP COMPLETE");
+            showTitle(tr("done.title", "SIGNUP COMPLETE"));
         }
     }
 };
@@ -1763,7 +1852,7 @@ function mainLoop() {
     root.open();
     startAnimationLoop();
     startInputLoop();
-    transitionTo("welcome");
+    transitionTo("language_prompt");
 
     while (running && !js.terminated) {
         timer.cycle();
@@ -1789,6 +1878,9 @@ if (pendingLogon && !js.terminated) {
         // User is already logged in from createAccountFromSession()
         // Just need to run the normal logon procedure
         log(LOG_INFO, 'future_signup: running logon procedure for ' + session.alias);
+        // Switch Synchronet's native bbs.text table before any stock logon
+        // prompts are emitted in the language selected before account creation.
+        bbs.load_user_text();
         bbs.logon(); // Run normal logon procedure
     } catch (logonErr) {
         try { log(LOG_ERR, "future_signup logon failed: " + logonErr); } catch (_) { }
