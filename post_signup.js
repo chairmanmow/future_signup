@@ -5,6 +5,14 @@ load("sbbsdefs.js");
 // mail a new-user welcome to whoever is actually logged in. Omitted = send.
 function showStandardBBSStats(skipWelcomeMail) {
     if (!skipWelcomeMail) sendWelcomeMessage(user);
+    // Welcome screens live in fshell_ts (src/newuser_welcome_entry.ts); the
+    // stock text/ screens below only show if that bundle fails to load.
+    try {
+        load({}, "/sbbs/mods/fshell_ts/dist/newuser_welcome.js");
+        return;
+    } catch (e) {
+        log(LOG_ERR, "post_signup: newuser_welcome bundle failed: " + e);
+    }
     console.clear();
 
     console.printfile(system.text_dir + "sbbs.msg", P_NOABORT);

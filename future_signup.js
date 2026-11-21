@@ -49,6 +49,26 @@ var MOCK_MODE = (function () {
     return false;
 })();
 log(LOG_INFO, "future_signup.js loaded, mock=" + MOCK_MODE);
+
+/* Reuse the logon/shell reading when available; the live NEW-user path enters
+   here before customlogon.js normally measures the link. Probe before painting
+   or polling input, never in an animation callback. Unknown stays full-speed. */
+function signupLinkProfile() {
+    var tier = 'full';
+    try { tier = load({}, '/sbbs/mods/load/linkspeed.js').tier(); }
+    catch (e) { log(LOG_WARNING, 'future_signup linkspeed unavailable: ' + e); }
+    if (tier !== 'static' && tier !== 'lite') tier = 'full';
+    return {
+        tier: tier,
+        animate: tier !== 'static',
+        minFrameMs: tier === 'lite' ? 800 : MIN_FRAME_INTERVAL_MS,
+        speedScale: tier === 'lite' ? 4 : 1,
+        inputQuietMs: tier === 'lite' ? 2000 : 0,
+        countdownMs: tier === 'static' ? 5000 : (tier === 'lite' ? 2000 : 1000)
+    };
+}
+var linkProfile = signupLinkProfile();
+log(LOG_INFO, 'future_signup animation tier=' + linkProfile.tier);
 console.autoterm |= USER_MOUSE;
 
 /* ========================= 3dBBS depth ========================= */
@@ -522,16 +542,18 @@ function loadSpriteFrames(binPath, cols, rows) {
 }
 
 function drawFrameToPane(pane, frame) {
-    pane.clear();
+    // Each sprite is the same full-sized cell grid. Replacing cells in place
+    // lets Frame keep its diff buffer; clear() invalidates the entire display
+    // and makes even an unchanged sprite get transmitted again.
     for (var r = 0; r < frame.length; r++) {
-        pane.gotoxy(1, 1 + r);
         var row = frame[r];
         for (var c = 0; c < row.length; c++) {
             var cell = row[c];
-            pane.putmsg(cell.ch, cell.attr);
+            pane.setData(c, r, cell.ch, cell.attr, false);
         }
     }
-    pane.draw();
+    if (!pane.is_open) pane.open();
+    pane.cycle();
 }
 
 function buildAnimations(def, totalFrames) {
@@ -573,7 +595,7 @@ function buildAnimations(def, totalFrames) {
     return { map: animations, first: firstKey };
 }
 
-function SpriteAnimator(pane, frames, animations, defaultAnimation) {
+function SpriteAnimator(pane, frames, animations, defaultAnimation, profile) {
     this.pane = pane;
     this.frames = frames;
     this.animations = animations;
@@ -581,6 +603,9 @@ function SpriteAnimator(pane, frames, animations, defaultAnimation) {
     this.currentName = null;
     this.cursor = 0;
     this.nextTick = 0;
+    this.profile = profile || { animate: true, minFrameMs: MIN_FRAME_INTERVAL_MS, speedScale: 1, inputQuietMs: 0 };
+    this.resumeAt = 0;
+    this.renderedFrame = null;
     this.defaultAnimation = defaultAnimation || null;
     this.pane.makeContentTransparent();
     this.pane.cycle();
@@ -588,6 +613,16 @@ function SpriteAnimator(pane, frames, animations, defaultAnimation) {
 
 SpriteAnimator.prototype.hasAnimation = function (name) {
     return this.animations.hasOwnProperty(name);
+};
+
+SpriteAnimator.prototype.frameInterval = function () {
+    return Math.max(this.profile.minFrameMs, this.current.speed * this.profile.speedScale);
+};
+
+SpriteAnimator.prototype.noteInput = function (now) {
+    if (!this.profile.inputQuietMs) return;
+    this.resumeAt = (now !== undefined ? now : clockMs()) + this.profile.inputQuietMs;
+    if (this.current) this.nextTick = this.resumeAt + this.frameInterval();
 };
 
 SpriteAnimator.prototype.play = function (name, now) {
@@ -598,7 +633,7 @@ SpriteAnimator.prototype.play = function (name, now) {
     this.current = anim;
     this.currentName = name;
     this.cursor = 0;
-    this.nextTick = nowMs + anim.speed;
+    this.nextTick = Math.max(nowMs, this.resumeAt) + this.frameInterval();
     this.renderCurrentFrame();
 };
 
@@ -609,14 +644,20 @@ SpriteAnimator.prototype.ensure = function (name) {
 SpriteAnimator.prototype.renderCurrentFrame = function () {
     if (!this.current) return;
     var frameIndex = this.current.frames[Math.min(this.cursor, this.current.frames.length - 1)];
+    if (this.renderedFrame === frameIndex) return;
     drawFrameToPane(this.pane, this.frames[frameIndex]);
+    this.renderedFrame = frameIndex;
 };
 
 SpriteAnimator.prototype.step = function (now) {
     if (!this.current) return MIN_FRAME_INTERVAL_MS;
+    // Static mode still selects an appropriate pose in play(), but never
+    // generates idle traffic. It does not need a repeating timer at all.
+    if (!this.profile.animate) return MIN_FRAME_INTERVAL_MS;
     var nowMs = now !== undefined ? now : clockMs();
+    var interval = this.frameInterval();
 
-    if (this.nextTick === 0) this.nextTick = nowMs + this.current.speed;
+    if (this.nextTick === 0) this.nextTick = nowMs + interval;
     if (nowMs < this.nextTick) return Math.max(MIN_FRAME_INTERVAL_MS, this.nextTick - nowMs);
 
     var advanced = false;
@@ -628,13 +669,13 @@ SpriteAnimator.prototype.step = function (now) {
                     this.cursor = 0;
                 } else {
                     this.cursor = this.current.frames.length - 1;
-                    this.nextTick = nowMs + this.current.speed;
+                    this.nextTick = nowMs + interval;
                     advanced = true;
                     break;
                 }
             }
         }
-        this.nextTick += this.current.speed;
+        this.nextTick += interval;
         advanced = true;
         if (!this.current.loop && this.cursor === this.current.frames.length - 1)
             break;
@@ -779,7 +820,7 @@ main.bottom();
 spritePane.top();
 root.cycle();
 // TODO: can we prep the frames for transparency using sprite.setAttr or clearAttr on black cells?
-var animator = new SpriteAnimator(spritePane, spriteData.frames, animations.map, animations.first);
+var animator = new SpriteAnimator(spritePane, spriteData.frames, animations.map, animations.first, linkProfile);
 
 var session = {
     lang: "en",
@@ -845,6 +886,7 @@ function clearHotspots() {
 
 function addHotspotForFrame(frame, cmd) {
     if (!hotspotsSupported) return;
+    if (session.mouse === false) return; // hotspots re-enable mouse reporting
     var absX = frame.x - 1;
     for (var row = frame.y; row < frame.y + frame.height; row++) {
         var absY = row - 1;
@@ -908,9 +950,32 @@ function transitionTo(nextState, timeout) {
 function pollInput() {
     var key = console.inkey(K_NONE, 0);
     if (!key) return;
+    animator.noteInput();
 
     if (key === "\x1b") {
-        running = false;
+        // ESC never ends signup. Some terminals (NetRunner) put a bare ESC on
+        // the wire for every mouse click: sbbs's legacy X10 decoder
+        // (ansi_terminal.cpp handle_non_SGR_mouse_sequence) range-checks the Y
+        // byte against `ch` instead of `inch`, so the report fails and the ESC
+        // falls through - and NetRunner keeps sending them even after
+        // ?1000l/?1006l. Callers who want out can hang up.
+        // Any bytes right behind the ESC are drained so a non-mouse sequence
+        // can't leak into the alias/password fields, and logged for diagnosis.
+        var tail = "";
+        for (var d = 0; d < 16; d++) {
+            var extra = console.inkey(K_NONE, 30);
+            if (!extra) break;
+            tail += extra;
+        }
+        var hex = "";
+        for (var h = 0; h < tail.length; h++) hex += format("%02X ", tail.charCodeAt(h) & 0xFF);
+        log(LOG_INFO, format("future_signup: ESC ignored state=%s mouse_mode=%s autoterm=0x%X tail=[%s]",
+            currentState, String(console.mouse_mode), console.autoterm, hex));
+        // During the mouse test it still means "clicks don't work here".
+        if (currentState === "mouse_prompt") {
+            session.mouse = false;
+            transitionTo("mouse_fail");
+        }
         return;
     }
 
@@ -1025,6 +1090,8 @@ function pollInput() {
 
 function startAnimationLoop() {
     if (animationEvent) animationEvent.abort = true;
+    animationEvent = null;
+    if (!linkProfile.animate) return;
     animationEvent = timer.addEvent(MIN_FRAME_INTERVAL_MS, true, function () {
         var wait = animator.step();
         animationEvent.interval = Math.max(MIN_FRAME_INTERVAL_MS, wait);
@@ -1622,8 +1689,9 @@ var states = {
             button.center("\1h\1w" + clickLabel + "\1n");
             main.draw();
 
-            buttonInterval = timer.addEvent(1000, true, function () {
-                seconds--;
+            buttonInterval = timer.addEvent(linkProfile.countdownMs, true, function () {
+                // Cadence can change; the actual mouse-test deadline must not.
+                seconds = Math.max(0, Math.ceil((MOUSE_TIMEOUT_MS - (clockMs() - stateStarted)) / 1000));
                 button.gotoxy(button.width / 2, 2);
                 var secStr = JSON.stringify(seconds);
                 button.putmsg(secStr.length === 1 ? "0" + secStr : secStr);
@@ -1654,6 +1722,13 @@ var states = {
         enter: function () {
             if (buttonInterval) buttonInterval.abort = true;
             session.mouse = false;
+            // Stop mouse reporting so later clicks can't arrive as stray ESCs.
+            // mouse_mode alone isn't enough: sbbs add_hotspot() calls
+            // set_mouse(MOUSE_MODE_ON) again, so the next screen's buttons
+            // re-arm reporting. Dropping USER_MOUSE from the detected terminal
+            // flags makes add_hotspot a no-op for the rest of the session.
+            console.mouse_mode = false;
+            console.autoterm &= ~USER_MOUSE;
             centerLine(speechBubbleText, tr("mouse.fail", "no click? no prob. keys it is."));
             playAnimation(shrugAnim);
             showTitle(tr("mouse.failTitle", "keyboard it is"));
